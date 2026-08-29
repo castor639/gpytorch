@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from abc import ABC, abstractproperty
 from copy import deepcopy
+from typing import Any
+import weakref
 
 import torch
 from linear_operator.operators import LinearOperator
@@ -15,7 +17,6 @@ from ..kernels import Kernel
 from ..likelihoods import GaussianLikelihood
 from ..means import Mean
 from ..models import ApproximateGP, ExactGP
-from ..models.exact_prediction_strategies import DefaultPredictionStrategy
 from ..module import Module
 from ..utils.memoize import add_to_cache, cached, clear_cache_hook, register_cache_clear_hook
 from . import _VariationalDistribution
@@ -40,8 +41,30 @@ class _BaseExactGP(ExactGP):
         return MultivariateNormal(mean, covar)
 
 
-def _add_cache_hook(tsr: Tensor, pred_strat: DefaultPredictionStrategy) -> Tensor:
-    register_cache_clear_hook(tsr, pred_strat)
+def _add_cache_hook(tsr: Tensor, module: Any) -> Tensor:
+    r"""Clear caches once autograd has consumed a cached tensor.
+
+    Inference-time caches may retain references to an old autograd graph. Registering this hook
+    ensures those caches are dropped after backward so the next forward pass rebuilds them from the
+    current graph.
+    """
+    # Modules that override ``_clear_cache`` (e.g. variational strategies) may hold caches beyond
+    # ``_memoize_cache``. Prefer that method when available. Prediction strategies are not Modules
+    # and only need the memoize cache cleared.
+    clear_cache = getattr(type(module), "_clear_cache", None)
+    if clear_cache is not None and clear_cache is not Module._clear_cache:
+        if tsr.grad_fn is not None:
+            weak_module = weakref.ref(module)
+
+            def hook(*args: Any, **kwargs: Any) -> None:
+                obj = weak_module()
+                if obj is not None:
+                    obj._clear_cache()
+
+            tsr.grad_fn.register_hook(hook)
+        return tsr
+
+    register_cache_clear_hook(tsr, module)
     return tsr
 
 
