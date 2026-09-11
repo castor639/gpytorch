@@ -4,7 +4,7 @@ import unittest
 
 import torch
 
-from gpytorch.kernels import Matern52KernelGrad
+from gpytorch.kernels import Matern52KernelGrad, RBFKernelGrad
 from gpytorch.test.base_kernel_test_case import BaseKernelTestCase
 
 
@@ -72,6 +72,21 @@ class TestMatern52KernelGrad(unittest.TestCase, BaseKernelTestCase):
         kernel.initialize(lengthscale=ls_init)
         actual_value = ls_init.view_as(kernel.lengthscale)
         self.assertLess(torch.norm(kernel.lengthscale - actual_value), 1e-5)
+
+
+    def test_function_derivative_sign_matches_rbf(self):
+        """cov(f(x), df/dx(0)) should share sign with RBFKernelGrad (issue #2563)."""
+        inputs = torch.tensor([[-1.0, 0.0], [0.0, 0.0], [1.0, 0.0]])
+        matern = Matern52KernelGrad()
+        rbf = RBFKernelGrad()
+        matern_k = matern(inputs).to_dense().detach()
+        rbf_k = rbf(inputs).to_dense().detach()
+        # Index [0, 4] is cov(f((-1,0)), df/dx1((0,0))); RBF is negative here.
+        self.assertLess(rbf_k[0, 4].item(), 0.0)
+        self.assertLess(matern_k[0, 4].item(), 0.0)
+        # Index [2, 4] is cov(f((1,0)), df/dx1((0,0))); RBF is positive here.
+        self.assertGreater(rbf_k[2, 4].item(), 0.0)
+        self.assertGreater(matern_k[2, 4].item(), 0.0)
 
 
 if __name__ == "__main__":
